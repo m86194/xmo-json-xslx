@@ -3,7 +3,9 @@ found and corresponding values for a list entry as rows."""
 
 # inspired by https://stackoverflow.com/a/57346253/53897
 import datetime
+import gzip
 import itertools
+import os
 import re
 import sys
 from glob import glob
@@ -20,7 +22,7 @@ column_for = dict()
 
 raw_filenames = sys.argv[2:]
 filenames = list(itertools.chain.from_iterable([glob(f) for f in raw_filenames]))  # flatten(..)
-filenames.sort(reverse=True)  # Newest first
+filenames.sort(reverse=True)  # Datestamped, so newest first
 
 xmo_split_re = re.compile("^ {2}\w+$")
 xmo_collect_re = re.compile("^ {4}( *\w+) : (.*)$")
@@ -55,26 +57,36 @@ def best_datatype_for(v):
 with xlsxwriter.Workbook(xlsx_file, {'default_date_format': 'yyyy-mm-dd hh:mm:ss'}) as workbook:
     worksheet = workbook.add_worksheet()
     row_no = 0
+
     for filename in tqdm(filenames):
+        if os.path.getsize(filename) == 0:  # File system ran full?
+            continue
+
+        if filename.endswith(".gz"):
+            f_open = gzip.open
+        else:
+            f_open = open
+
         # Read output from "xmo-client -p" as list[dict] - currently only single values, not nested
-        with open(filename) as f:
-            d = dict()
-            dictlist = []
+        with f_open(filename, mode="rt") as f:
+            entries = dict()
+            entries_list = []
             for linewithlineending in f:
+                # print(">>", linewithlineending)
                 line = linewithlineending.rsplit("\n")[0]
                 if xmo_split_re.match(line):
-                    if d:
-                        dictlist.append(d)
-                        d = dict()
+                    if entries:
+                        entries_list.append(entries)
+                        entries = dict()
                 else:
                     match = xmo_collect_re.match(line)
                     if match:
-                        if d.get(match.group(1)):
+                        if entries.get(match.group(1)):
                             raise RuntimeError(">> already in host : " + line)
-                        d[match.group(1)] = match.group(2).lstrip("'").rstrip("'")
+                        entries[match.group(1)] = match.group(2).lstrip("'").rstrip("'")
 
-            if d:
-                dictlist.append(d)
+            if entries:
+                entries_list.append(entries)
 
             # Argument to put in the first column, if "...\timestamp..." convert to date (Windows only for now).
             first_field_value = filename
@@ -86,9 +98,11 @@ with xlsxwriter.Workbook(xlsx_file, {'default_date_format': 'yyyy-mm-dd hh:mm:ss
                 pass
 
             if first_file:
+                if len(entries_list) == 0:
+                    raise RuntimeError(f"broken data, no columns found in {filename}") # bad transfer?
                 # Identify a column for every key.
                 column_for["_"] = len(column_for)
-                for row in dictlist:
+                for row in entries_list:
                     for key in row:
                         if not key in column_for:
                             column_width = []
@@ -102,12 +116,14 @@ with xlsxwriter.Workbook(xlsx_file, {'default_date_format': 'yyyy-mm-dd hh:mm:ss
                     row_no = row_no + 1
                 first_file = False
 
-            for original_row in dictlist:
+            for original_row in entries_list:
                 row = dict(original_row)
                 row["_"] = first_field_value
 
                 for k, v in row.items():
-                    col = column_for[k]
+                    col = column_for.get(k)
+                    if col is None:
+                        raise KeyError(f"'{k}' in {column_for} for {filename}")
                     if v or len(v):
                         column_width[col] = max(column_width[col], len(str(v)))
                         bv = best_datatype_for(v)

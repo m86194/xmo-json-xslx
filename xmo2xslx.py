@@ -27,32 +27,32 @@ filenames.sort(reverse=True)  # Datestamped, so newest first
 xmo_split_re = re.compile("^ {2}\w+$")
 xmo_collect_re = re.compile("^ {4}( *\w+) : (.*)$")
 
-# Mon Sep 28 08:39:33 2020
-xmo_date_starts_with = set(["M", "T", "W", "F", "S"])
-xmo_date_ends_with = set(['0','1','2','3','4','5','6','7','8','9'])
 
-
-def best_datatype_for(v):
-    if not v:
-        return v
-    if v == "Thu Jan  1 01:00:00 1970":  # Quick hack for null dates
+def best_datatype_for(value):
+    """The datatype of the value helps xlsxwriter to determine the best Excel representation (making
+    timestamps into dates etc.), so convert the strings into whatever is better."""
+    if not value:
+        return value
+    if value == "Thu Jan  1 01:00:00 1970":  # Quick hack for null dates
         return None
     try:
-        return int(v)
-    except (ValueError, TypeError) as e:
+        return int(value)
+    except (ValueError, TypeError):
         pass
     try:  # expensive op ahead.  If "Mon Sep 28 08:39:33 2020" convert to tande's clock time
-        start_ok = v[0] in xmo_date_starts_with
-        if start_ok:
-            end_ok = v[-1] in xmo_date_ends_with
-            if end_ok:
-                # https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes
-                utc_datetime = pytz.utc.localize(datetime.datetime.strptime(v, '%a %b %d %H:%M:%S %Y'))
-                return utc_datetime.astimezone(pytz.timezone("Etc/GMT-1")).replace(tzinfo=None)
-    except (ValueError, TypeError) as e:
+        # First char is first char of Weekday, and last char is last char of year.
+        if value[0] in {"M", "T", "W", "F", "S"} and value[-1] in {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9'}:
+            # https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes
+            utc_datetime = pytz.utc.localize(datetime.datetime.strptime(value, '%a %b %d %H:%M:%S %Y'))
+            return utc_datetime.astimezone(pytz.timezone("Etc/GMT-1")).replace(tzinfo=None)
+    except (ValueError, TypeError):
         pass
-    return v
+    return value
 
+
+# https://stackoverflow.com/a/6826099/53897
+with open(xlsx_file, "r+") as file_not_locked_by_excel:
+    pass
 
 with xlsxwriter.Workbook(xlsx_file, {'default_date_format': 'yyyy-mm-dd hh:mm:ss'}) as workbook:
     worksheet = workbook.add_worksheet()
@@ -71,9 +71,8 @@ with xlsxwriter.Workbook(xlsx_file, {'default_date_format': 'yyyy-mm-dd hh:mm:ss
         with f_open(filename, mode="rt") as f:
             entries = dict()
             entries_list = []
-            for linewithlineending in f:
-                # print(">>", linewithlineending)
-                line = linewithlineending.rsplit("\n")[0]
+            for line_with_lineending in f:
+                line = line_with_lineending.rsplit("\n")[0]
                 if xmo_split_re.match(line):
                     if entries:
                         entries_list.append(entries)
@@ -99,7 +98,7 @@ with xlsxwriter.Workbook(xlsx_file, {'default_date_format': 'yyyy-mm-dd hh:mm:ss
 
             if first_file:
                 if len(entries_list) == 0:
-                    raise RuntimeError(f"broken data, no columns found in {filename}") # bad transfer?
+                    raise RuntimeError(f"broken data, no columns found in {filename}")  # bad transfer?
                 # Identify a column for every key.
                 column_for["_"] = len(column_for)
                 for row in entries_list:
